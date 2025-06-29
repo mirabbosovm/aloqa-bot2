@@ -9,7 +9,7 @@ from keep_alive import keep_alive
 import requests
 import os
 
-API_TOKEN = '7552192503:AAG56SZBLsKkn-56xNFCJ6ZuzvlgEAcc7WI'
+API_TOKEN = '7609005170:AAHZZCUY5D48MjyKEDcfUOnJvtpm5wB0_N4'
 ADMIN_ID = 959222282
 
 bot = Bot(token=API_TOKEN)
