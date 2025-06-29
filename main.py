@@ -1,94 +1,100 @@
-from aiogram import Bot, Dispatcher, types
+import logging
+from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
-import json
-from keep_alive import keep_alive
-import requests
-import os
+import aiohttp
+from datetime import datetime
 
 API_TOKEN = '7609005170:AAHZZCUY5D48MjyKEDcfUOnJvtpm5wB0_N4'
-ADMIN_ID = 959222282
+ADMIN_ID = 959222282  # O'zingizning Telegram ID
 
+logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+dp = Dispatcher(bot)
 
-class RegisterState(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_phone = State()
+users = {}
 
-users_file = 'users.json'
-def load_users():
-    return json.load(open(users_file, 'r')) if os.path.exists(users_file) else {}
+menu = ReplyKeyboardMarkup(resize_keyboard=True)
+menu.add(KeyboardButton("📨 Xabar yuborish"), KeyboardButton("✏️ Ismni tahrirlash"))
+menu.add(KeyboardButton("💱 Valyuta kurslari"))
 
-def save_users(data):
-    with open(users_file, 'w') as f:
-        json.dump(data, f, indent=4)
-
+# Start buyrug'i
 @dp.message_handler(commands=['start'])
-async def start_cmd(message: types.Message):
-    users = load_users()
-    if str(message.from_user.id) in users:
-        await message.answer("Siz allaqachon ro'yxatdan o'tgansiz.")
+async def send_welcome(message: types.Message):
+    user_id = message.from_user.id
+    if user_id in users:
+        await message.answer("Siz avval ro'yxatdan o'tgansiz.", reply_markup=menu)
     else:
-        await message.answer("Ismingizni kiriting:")
-        await RegisterState.waiting_for_name.set()
+        await message.answer("Salom! Iltimos, ismingizni kiriting:")
+        users[user_id] = {"step": "get_name"}
 
-@dp.message_handler(state=RegisterState.waiting_for_name)
-async def get_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    button = KeyboardButton("📱 Telefon raqamni yuborish", request_contact=True)
-    markup = ReplyKeyboardMarkup(resize_keyboard=True).add(button)
-    await message.answer("Iltimos, telefon raqamingizni yuboring", reply_markup=markup)
-    await RegisterState.waiting_for_phone.set()
+# Ro'yxatdan o'tish
+@dp.message_handler(lambda message: users.get(message.from_user.id, {}).get("step") == "get_name")
+async def get_name(message: types.Message):
+    users[message.from_user.id] = {
+        "name": message.text,
+        "step": "get_phone"
+    }
+    kb = ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("📞 Raqamni yuborish", request_contact=True))
+    await message.answer("Endi telefon raqamingizni yuboring:", reply_markup=kb)
 
-@dp.message_handler(content_types=types.ContentType.CONTACT, state=RegisterState.waiting_for_phone)
-async def get_phone(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    name = data['name']
-    phone = message.contact.phone_number
-    users = load_users()
-    users[str(message.from_user.id)] = {"name": name, "phone": phone}
-    save_users(users)
-    await message.answer("Ro'yxatdan o'tdingiz!", reply_markup=types.ReplyKeyboardRemove())
-    await state.finish()
+@dp.message_handler(content_types=types.ContentType.CONTACT)
+async def get_phone(message: types.Message):
+    users[message.from_user.id]["phone"] = message.contact.phone_number
+    users[message.from_user.id]["step"] = "done"
+    await message.answer("Ro'yxatdan o'tdingiz! Endi menyudan foydalanishingiz mumkin.", reply_markup=menu)
 
-@dp.message_handler(commands=['ism'])
-async def change_name(message: types.Message):
-    users = load_users()
-    if str(message.from_user.id) in users:
-        await message.answer("Yangi ismingizni kiriting:")
-        await RegisterState.waiting_for_name.set()
-    else:
-        await message.answer("Iltimos, avval ro'yxatdan o'ting /start orqali.")
+# Tugma: Ismni tahrirlash
+@dp.message_handler(lambda message: message.text == "✏️ Ismni tahrirlash")
+async def edit_name(message: types.Message):
+    users[message.from_user.id]["step"] = "get_name"
+    await message.answer("Yangi ismingizni yuboring:")
 
-@dp.message_handler(commands=['valyuta'])
-async def get_valyuta(message: types.Message):
-    url = 'https://cbu.uz/uz/arkhiv-kursov-valyut/json/'
-    try:
-        r = requests.get(url, timeout=5).json()
-        result = []
-        for item in r:
-            if item['Ccy'] in ['USD', 'EUR', 'RUB']:
-                result.append(f"{item['CcyNm_UZ']} ({item['Ccy']}):\n  Sotib olish: {item['Rate']} so'm\n  Sana: {item['Date']}")
-        await message.answer("\n\n".join(result))
-    except:
-        await message.answer("Valyuta kurslarini olishda xatolik yuz berdi.")
+# Tugma: Valyuta kursi
+@dp.message_handler(lambda message: message.text == "💱 Valyuta kurslari")
+async def currency_info(message: types.Message):
+    today = datetime.today().strftime("%Y-%m-%d")
+    url = f"https://cbu.uz/uz/arkhiv-kursov-valyut/json/"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+            msg = f"🇺🇿 {today} kundagi MB kurslari:\n"
+            for val in data[:3]:  # USD, EUR, RUB
+                msg += f"{val['CcyNm_UZ']} ({val['Ccy']}): {val['Rate']} so'm\n"
+            await message.answer(msg)
 
+# Tugma: Xabar yuborish
+@dp.message_handler(lambda message: message.text == "📨 Xabar yuborish")
+async def prompt_message(message: types.Message):
+    users[message.from_user.id]["step"] = "send_message"
+    await message.answer("Admin uchun xabaringizni yuboring (matn, rasm, audio, video, fayl, gif):")
+
+# Adminga barcha xabarlarni yuborish
 @dp.message_handler(content_types=types.ContentType.ANY)
-async def forward_media(message: types.Message):
-    users = load_users()
-    if str(message.from_user.id) not in users:
-        await message.answer("Iltimos, avval ro'yxatdan o'ting /start orqali.")
-        return
-    user = users[str(message.from_user.id)]
-    caption = f"📩 Yangi xabar\n👤 {user.get('name')}\n📞 {user.get('phone')}\n🆔 {message.from_user.id}"
-    await bot.send_message(chat_id=ADMIN_ID, text=caption)
-    await bot.copy_message(chat_id=ADMIN_ID, from_chat_id=message.chat.id, message_id=message.message_id)
-    await message.answer("Xabaringiz yuborildi!")
+async def forward_to_admin(message: types.Message):
+    user = users.get(message.from_user.id)
+    if user and user.get("step") == "send_message":
+        caption = f"📥 Yangi xabar:\n👤 {user['name']}\n📞 {user['phone']}"
+        try:
+            if message.text:
+                await bot.send_message(ADMIN_ID, f"{caption}\n📝 {message.text}")
+            elif message.photo:
+                await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption)
+            elif message.video:
+                await bot.send_video(ADMIN_ID, message.video.file_id, caption=caption)
+            elif message.audio:
+                await bot.send_audio(ADMIN_ID, message.audio.file_id, caption=caption)
+            elif message.document:
+                await bot.send_document(ADMIN_ID, message.document.file_id, caption=caption)
+            elif message.voice:
+                await bot.send_voice(ADMIN_ID, message.voice.file_id, caption=caption)
+            elif message.animation:
+                await bot.send_animation(ADMIN_ID, message.animation.file_id, caption=caption)
+            else:
+                await bot.send_message(ADMIN_ID, f"{caption}\n[Fayl turini yuborib bo'lmadi]")
+        except Exception as e:
+            await message.reply("Xabarni yuborishda xatolik yuz berdi.")
+        users[message.from_user.id]["step"] = "done"
+        await message.reply("Xabaringiz yuborildi ✅", reply_markup=menu)
 
 if __name__ == '__main__':
-    keep_alive()
     executor.start_polling(dp, skip_updates=True)
